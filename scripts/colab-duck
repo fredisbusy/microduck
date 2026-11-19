@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# colab-duck: Colab GPU 런타임에서 microduck_rl을 학습·재생하는 도우미 (google-colab-cli + ssh).
+# 로컬 microduck_rl/ 가 기준(source of truth)이고, VM의 /content/microduck_rl 은 그 복사본이다.
+#
+#   scripts/colab-duck up [GPU]            런타임 생성(기본 T4) + 코드 올리기 + uv sync
+#   scripts/colab-duck sync                로컬 microduck_rl 변경분을 VM에 다시 올리기
+#   scripts/colab-duck train NAME [ENVS] [ITERS] [--resume]
+#                                          백그라운드 학습 (기본 4096마리 × 2000회)
+#   scripts/colab-duck logs [NAME]         학습 진행 요약
+#   scripts/colab-duck status              런타임·GPU·실행 중인 작업
+#   scripts/colab-duck ckpts [NAME]        체크포인트 목록
+#   scripts/colab-duck view [NAME|CKPT]    브라우저 3D 뷰어 → http://localhost:8080 (Ctrl-C로 종료)
+#   scripts/colab-duck tb                  TensorBoard → http://localhost:6006 (Ctrl-C로 종료)
+#                                          view/tb 앞에 BIND=ts 를 붙이면 폰 등 Tailscale 기기에서도 접속
+#   scripts/colab-duck pull                VM의 logs/rsl_rl 을 로컬 runs/colab/ 로 받기
+#   scripts/colab-duck export [NAME|CKPT]  ONNX 내보내기 → runs/colab/
+#   scripts/colab-duck stop-job            학습·뷰어 프로세스 종료
+#   scripts/colab-duck sh [CMD...]         VM에서 명령 실행 (인자 없으면 대화형 셸)
+#   scripts/colab-duck down                런타임 종료 (컴퓨팅 단위 절약: 다 쓰면 꼭!)
+#
+# 환경 변수: COLAB_SESSION(기본 duck), TASK(기본 Mjlab-Velocity-Flat-MicroDuck), VIEW_PORT, TB_PORT, BIND(127.0.0.1|ts), NO_OPEN
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOCAL_RL="$ROOT/microduck_rl"
+SESSION="${COLAB_SESSION:-duck}"
+TASK="${TASK:-Mjlab-Velocity-Flat-MicroDuck}"
+VIEW_PORT="${VIEW_PORT:-8080}"
+TB_PORT="${TB_PORT:-6006}"
+# 뷰어·TensorBoard를 열 주소. BIND=ts 면 Mac의 Tailscale 주소로 열어서 폰 등 tailnet 기기에서 접속 가능
+BIND="${BIND:-127.0.0.1}"
+if [ "$BIND" = ts ]; then
+  TS_CLI="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
+  BIND="$("$TS_CLI" ip -4 2>/dev/null | head -1)"; [ -n "$BIND" ] || { echo "❌ Tailscale 주소를 못 찾았어요" >&2; exit 1; }
+  TS_NAME="$("$TS_CLI" status --self --peers=false 2>/dev/null | awk 'NR==1{print $2}')"
+fi
+COLAB="$(command -v colab || echo "$HOME/.local/bin/colab")"
+REMOTE=/content/microduck_rl
+RENV='export PATH=/root/.local/bin:$PATH MUJOCO_GL=egl UV_HTTP_TIMEOUT=600 PYTHONUNBUFFERED=1; cd /content/microduck_rl'
+# VM 백그라운드 작업(train/view/tb)은 PID 파일로 관리. 이름으로 pgrep/pkill 하면 ssh 명령줄 자체가 걸림.
+RJOB='running(){ [ -f /content/$1.pid ] && kill -0 "$(cat /content/$1.pid)" 2>/dev/null; }
+startjob(){ local n=$1 log=$2; shift 2; setsid nohup "$@" >> "$log" 2>&1 < /dev/null & echo $! > /content/$n.pid; }
+stopjob(){ if running $1; then kill -- -"$(cat /content/$1.pid)" 2>/dev/null; echo "$1 종료"; fi; rm -f /content/$1.pid; }'
+
+# 모든 ssh 호출이 연결 하나를 나눠 쓰도록(ControlMaster). Colab은 런타임당 SSH 동시 접속 수가 제한됨.
+SSH_OPTS=(
+  -o "ProxyCommand=$COLAB ssh --proxy-mode -s $SESSION"
+  -o User=root -o IdentityFile="$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes -o IdentityAgent=none
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+  -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-colab-$SESSION" -o ControlPersist=10m
+  -o ServerAliveInterval=30
+)
+rssh() { ssh "${SSH_OPTS[@]}" "colab-$SESSION" "$@"; }
+die() { echo "❌ $*" >&2; exit 1; }
+
+has_session() { "$COLAB" sessions 2>/dev/null | grep -qw -- "$SESSION"; }
+need_session() { has_session || die "런타임 '$SESSION'이 없어요. 먼저: scripts/colab-duck up"; }
+
+# NAME(run 이름) 또는 체크포인트 경로 → VM의 체크포인트 경로
+resolve_ckpt() {
+  local arg="${1:-main}"
+  if [[ "$arg" == *.pt ]]; then echo "$arg"; return; fi
+  rssh "$RENV; ls -1 logs/rsl_rl/*/*_${arg}/model_*.pt 2>/dev/null | sort -V | tail -1"
+}
+
+wait_port() {  # VM 안에서 포트가 열릴 때까지 대기
+  rssh "for i in \$(seq 150); do (exec 3<>/dev/tcp/127.0.0.1/$1) 2>/dev/null && exit 0; sleep 2; done; exit 1"
+}
+
+forward() {  # 로컬 포트 → VM 포트를 기존 ssh 연결에 얹어서(동시 접속 제한 회피) Ctrl-C까지 유지
+  local lport="$1" rport="$2" what="$3" spec="$BIND:$1:127.0.0.1:$2" host="localhost"
+  [ "$BIND" = 127.0.0.1 ] || host="$BIND"
+  ssh "${SSH_OPTS[@]}" -O forward -L "$spec" "colab-$SESSION" >/dev/null || die "포트 $lport 연결 실패 (Mac에서 이미 쓰는 중이면 다른 포트: VIEW_PORT=8081 / TB_PORT=6007)"
+  trap 'ssh "${SSH_OPTS[@]}" -O cancel -L "'"$spec"'" "colab-$SESSION" 2>/dev/null; '"${4:-true}" EXIT
+  trap "exit 130" INT TERM HUP   # 신호로 끝나도 EXIT 정리(포워딩 해제·원격 작업 종료)가 돌게
+  echo "✅ $what: http://$host:$lport  (Ctrl-C로 종료)"
+  [ -z "${TS_NAME:-}" ] || echo "   Tailscale 기기에서: http://$TS_NAME:$lport"
+  [ -n "${NO_OPEN:-}" ] || open "http://$host:$lport" 2>/dev/null || true
+  while :; do sleep 3600 & wait $!; done   # wait여야 신호가 바로 처리됨
+}
+
+push_code() {
+  [ -d "$LOCAL_RL/.git" ] || die "$LOCAL_RL 이 없어요 (README의 '처음 받았을 때' 참고)"
+  echo "📤 로컬 microduck_rl 올리는 중 (git이 추적하는 파일 + 새 파일, .venv/logs 제외)"
+  (cd "$LOCAL_RL" && git ls-files -z --cached --others --exclude-standard | COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs --null -T - -czf -) \
+    | rssh "mkdir -p $REMOTE && tar xzf - --warning=no-unknown-keyword -C $REMOTE"
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  up)
+    gpu="${1:-T4}"
+    if has_session; then echo "런타임 '$SESSION'이 이미 있어요."; else
+      echo "🚀 런타임 생성: $SESSION ($gpu)"; "$COLAB" new -s "$SESSION" --gpu "$gpu"; fi
+    push_code
+    echo "📦 uv 설치 + 의존성 설치 (처음엔 5~10분)"
+    rssh "command -v uv >/dev/null || [ -x /root/.local/bin/uv ] || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; $RENV && uv sync 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
+    echo "✅ 준비 완료. 다음: scripts/colab-duck train quick 1024 100"
+    ;;
+  sync) need_session; push_code; echo "✅ 올림. (의존성이 바뀌었으면: scripts/colab-duck sh 'cd $REMOTE && /root/.local/bin/uv sync')" ;;
+  train)
+    need_session
+    name="${1:?run 이름이 필요해요 (예: quick, main)}"; envs="${2:-4096}"; iters="${3:-2000}"; resume="${4:-}"
+    extra=""
+    if [ "$resume" = "--resume" ]; then
+      ck="$(resolve_ckpt "$name")"; [ -n "$ck" ] || die "이어할 체크포인트가 없어요: $name"
+      extra="--agent.resume True --agent.load-run $(basename "$(dirname "$ck")") --agent.load-checkpoint $(basename "$ck")"
+      echo "↪️  이어서 학습: $ck"
+    fi
+    rssh "$RENV; $RJOB; running train && { echo '이미 학습 중이에요 (scripts/colab-duck logs / stop-job)'; exit 1; }
+      startjob train /content/train_$name.log uv run train $TASK --env.scene.num-envs $envs --agent.max-iterations $iters \
+        --agent.save-interval 50 --agent.logger tensorboard --agent.run-name $name $extra"
+    echo "🏋️ 학습 시작: $name (오리 ${envs}마리 × ${iters}회). 진행: scripts/colab-duck logs $name"
+    ;;
+  logs)
+    need_session; name="${1:-main}"
+    rssh "test -f /content/train_$name.log && sed 's/\x1b\[[0-9;]*m//g' /content/train_$name.log | awk '
+      /Learning iteration/{it=\$3} /Mean reward:/{r=\$NF} /Mean episode length:/{l=\$NF} /error_vel_xy:/{e=\$NF}
+      /ETA:/{printf \"%11s | 점수 %7s | 버틴 시간 %5s/1000 | 속도 오차 %6s | 남은 %s\\n\", it, r, l, e, \$NF}
+      /Traceback|Error|error:/{print}' | tail -n ${LINES_N:-12}" \
+      || die "로그가 없어요: /content/train_$name.log"
+    ;;
+  status)
+    need_session; "$COLAB" status -s "$SESSION" || true
+    rssh "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader; $RJOB; echo '--- 실행 중'; for j in train view tb; do running \$j && echo \"  \$j (pid \$(cat /content/\$j.pid))\"; done; true"
+    ;;
+  ckpts) need_session; rssh "$RENV; ls -1 logs/rsl_rl/*/*_${1:-main}/model_*.pt 2>/dev/null | sort -V" ;;
+  view)
+    need_session; ck="$(resolve_ckpt "${1:-main}")"; [ -n "$ck" ] || die "체크포인트가 없어요. 먼저 학습하세요."
+    echo "🦆 뷰어 시작: $ck"
+    rssh "$RENV; $RJOB; stopjob view >/dev/null; : > /content/viewer.log; startjob view /content/viewer.log uv run play $TASK --checkpoint-file $ck --num-envs ${NUM_ENVS:-1} --viewer viser"
+    # Colab VM은 8080을 자체 서버가 쓰므로 viser가 다음 빈 포트로 감 → 로그에서 실제 포트를 읽음
+    vport="$(rssh "for i in \$(seq 150); do p=\$(sed -n 's/.*viser (listening \*:\([0-9]*\)).*/\\1/p' /content/viewer.log | tail -1); [ -n \"\$p\" ] && { echo \$p; exit 0; }; [ -f /content/view.pid ] && kill -0 \$(cat /content/view.pid) 2>/dev/null || exit 1; sleep 2; done; exit 1")" \
+      || { rssh "tail -30 /content/viewer.log"; die "뷰어가 안 떴어요 (위 로그 참고)"; }
+    forward "$VIEW_PORT" "$vport" "브라우저 3D 뷰어 (패널의 Checkpoint로 다른 반복 횟수 보기)" \
+      'rssh "$RJOB; stopjob view" || true'
+    ;;
+  tb)
+    need_session
+    rssh "$RENV; $RJOB; running tb || startjob tb /content/tb.log uv run tensorboard --logdir logs/rsl_rl --port 6006 --host 127.0.0.1"
+    wait_port 6006 || { rssh "tail -20 /content/tb.log"; die "TensorBoard가 안 떴어요"; }
+    forward "$TB_PORT" 6006 "TensorBoard"
+    ;;
+  pull)
+    need_session; mkdir -p "$ROOT/runs/colab"
+    rssh "cd $REMOTE/logs/rsl_rl && tar czf - ." | tar xzf - -C "$ROOT/runs/colab"
+    echo "✅ $ROOT/runs/colab/ 에 받았어요"; find "$ROOT/runs/colab" -name 'model_*.pt' | sort -V | tail -3
+    ;;
+  export)
+    need_session; ck="$(resolve_ckpt "${1:-main}")"; [ -n "$ck" ] || die "체크포인트가 없어요"
+    it="$(basename "$ck" .pt)"; run="$(basename "$(dirname "$ck")")"; mkdir -p "$ROOT/runs/colab"
+    rssh "$RENV; uv run scripts/export.py $TASK --checkpoint-file $ck 2>&1 | tail -1"
+    out="$ROOT/runs/colab/${run}_${it}.onnx"; rssh "cat $REMOTE/output.onnx" > "$out"
+    echo "✅ $out"; echo "   Mac에서 조종: cd microduck_rl && uv run scripts/infer_policy.py --walking $out"
+    ;;
+  stop-job) need_session; rssh "$RJOB; for j in ${1:-train view tb}; do stopjob \$j; done; echo 끝" ;;
+  sh) need_session; if [ $# -eq 0 ]; then ssh "${SSH_OPTS[@]}" -t "colab-$SESSION" "cd $REMOTE; exec bash -l"; else rssh "$RENV; $*"; fi ;;
+  down) ssh "${SSH_OPTS[@]}" -O exit "colab-$SESSION" 2>/dev/null || true; "$COLAB" stop -s "$SESSION" ;;
+  help|-h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
+  *) die "모르는 명령: $cmd (scripts/colab-duck help)" ;;
+esac

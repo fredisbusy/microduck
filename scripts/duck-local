@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# duck-local: 학습된 체크포인트를 Mac에서(CPU) 3D 뷰어나 TensorBoard로 보기. GPU·Colab 연결 불필요.
+# 노트북(Colab·Kaggle)은 결과를 Hugging Face Hub의 비공개 저장소 <내 아이디>/microduck-runs에 올린다.
+# pull로 그걸 runs/hf에 받아 와서 Mac에서 띄운다. (처음 한 번: microduck_rl에서 uv run hf auth login)
+#
+#   scripts/duck-local pull              HF 저장소 → runs/hf (바뀐 파일만 받음)
+#   scripts/duck-local view [RUN|CKPT]   뷰어 → http://localhost:8090 (기본 RUN=main, 최신 체크포인트)
+#   scripts/duck-local tb                TensorBoard → http://localhost:6007
+#   scripts/duck-local ls [RUN]          찾은 체크포인트 목록
+#
+# 체크포인트 위치: DUCK_LOGS (기본: runs/hf → Google Drive의 microduck/logs/rsl_rl(예전 노트북) → runs/colab)
+# 환경 변수: DUCK_HF_REPO(기본 <내 아이디>/microduck-runs), TASK, VIEW_PORT(8090), TB_PORT(6007),
+#           BIND=ts(TensorBoard를 Tailscale 주소로), NO_OPEN
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASK="${TASK:-Mjlab-Velocity-Flat-MicroDuck}"
+VIEW_PORT="${VIEW_PORT:-8090}"
+TB_PORT="${TB_PORT:-6007}"
+die() { echo "❌ $*" >&2; exit 1; }
+
+logs_dir() {
+  if [ -n "${DUCK_LOGS:-}" ]; then (cd "$DUCK_LOGS" && pwd) || die "폴더 없음: $DUCK_LOGS"; return; fi
+  local d
+  [ -d "$ROOT/runs/hf" ] && { echo "$ROOT/runs/hf"; return; }
+  for d in "$HOME"/Library/CloudStorage/GoogleDrive-*/{"My Drive","내 드라이브"}/microduck/logs/rsl_rl; do
+    [ -d "$d" ] && { echo "$d"; return; }
+  done
+  [ -d "$ROOT/runs/colab" ] && { echo "$ROOT/runs/colab"; return; }
+  die "체크포인트 폴더를 못 찾았어요. 먼저 scripts/duck-local pull 하거나 DUCK_LOGS=<경로> 로 지정하세요."
+}
+
+list_ckpts() { ls -1 "$(logs_dir)"/*/*_"${1:-main}"/model_*.pt 2>/dev/null | sort -V; }
+
+open_url() { [ -n "${NO_OPEN:-}" ] || (sleep 2; open "$1") >/dev/null 2>&1 & }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  view)
+    arg="${1:-main}"
+    if [[ "$arg" == *.pt ]]; then ck="$arg"; else ck="$(list_ckpts "$arg" | tail -1)"; fi
+    [ -n "$ck" ] && [ -f "$ck" ] || die "체크포인트가 없어요: $arg ($(logs_dir))"
+    ck="$(cd "$(dirname "$ck")" && pwd)/$(basename "$ck")"   # 아래에서 microduck_rl로 cd 하므로 절대 경로로
+    echo "🦆 Mac에서 뷰어 시작: $ck"
+    echo "   http://localhost:$VIEW_PORT  (Checkpoints 탭에서 같은 run의 다른 반복 횟수로 바꾸기, Ctrl-C로 종료)"
+    echo "   참고: 뷰어는 Mac의 모든 네트워크 주소에서 열려요(Tailscale 기기에서도 http://<Mac 이름>:$VIEW_PORT)."
+    open_url "http://localhost:$VIEW_PORT"
+    cd "$ROOT/microduck_rl"
+    _VISER_PORT_OVERRIDE="$VIEW_PORT" exec uv run play "$TASK" --checkpoint-file "$ck" --num-envs 1 --viewer viser --device cpu
+    ;;
+  tb)
+    host=127.0.0.1
+    if [ "${BIND:-}" = ts ]; then host="$( (command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale) | xargs -I{} {} ip -4 | head -1)"; fi
+    echo "📈 TensorBoard: http://$host:$TB_PORT  ($(logs_dir), Ctrl-C로 종료)"
+    open_url "http://$host:$TB_PORT"
+    cd "$ROOT/microduck_rl"
+    exec uv run tensorboard --logdir "$(logs_dir)" --port "$TB_PORT" --host "$host"
+    ;;
+  pull)
+    cd "$ROOT/microduck_rl"
+    uv run --quiet python - "${DUCK_HF_REPO:-}" "$ROOT/runs/hf" <<'PY' || exit 1
+import sys
+from huggingface_hub import snapshot_download, whoami
+from huggingface_hub.errors import RepositoryNotFoundError
+repo, dst = sys.argv[1], sys.argv[2]
+try:
+    repo = repo or f"{whoami()['name']}/microduck-runs"
+except Exception:
+    sys.exit("❌ Hugging Face 로그인이 필요해요: cd microduck_rl && uv run hf auth login")
+print(f"☁️ {repo} → {dst}")
+try:
+    snapshot_download(repo, local_dir=dst)
+except RepositoryNotFoundError:
+    sys.exit(f"❌ 저장소가 없어요: {repo} (노트북 1-2를 한 번 실행하면 만들어져요. 다른 이름이면 DUCK_HF_REPO=아이디/이름)")
+print("✅ 받기 완료")
+PY
+    ;;
+  ls) echo "폴더: $(logs_dir)"; list_ckpts "${1:-main}" ;;
+  help|-h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
+  *) die "모르는 명령: $cmd (scripts/duck-local help)" ;;
+esac

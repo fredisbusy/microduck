@@ -1,0 +1,25 @@
+{
+  // Cmd+Shift+P → "Tasks: Run Task" → Colab: ...  (scripts/colab-duck 의 단축키)
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Colab: 런타임 켜기 (up)", "type": "shell", "command": "scripts/colab-duck up ${input:gpu}", "problemMatcher": [] },
+    { "label": "Colab: 코드 올리기 (sync)", "type": "shell", "command": "scripts/colab-duck sync", "problemMatcher": [] },
+    { "label": "Colab: 학습 시작 (train)", "type": "shell", "command": "scripts/colab-duck train ${input:run} ${input:envs} ${input:iters}", "problemMatcher": [] },
+    { "label": "Colab: 학습 이어하기 (resume)", "type": "shell", "command": "scripts/colab-duck train ${input:run} ${input:envs} ${input:iters} --resume", "problemMatcher": [] },
+    { "label": "Colab: 진행 보기 (logs)", "type": "shell", "command": "scripts/colab-duck logs ${input:run}", "problemMatcher": [] },
+    { "label": "Colab: 상태 (status)", "type": "shell", "command": "scripts/colab-duck status", "problemMatcher": [] },
+    { "label": "Colab: 3D 뷰어 (view)", "type": "shell", "command": "scripts/colab-duck view ${input:run}", "isBackground": true, "problemMatcher": [] },
+    { "label": "Colab: TensorBoard (tb)", "type": "shell", "command": "scripts/colab-duck tb", "isBackground": true, "problemMatcher": [] },
+    { "label": "Colab: 결과 받기 (pull)", "type": "shell", "command": "scripts/colab-duck pull", "problemMatcher": [] },
+    { "label": "Colab: ONNX 내보내기 (export)", "type": "shell", "command": "scripts/colab-duck export ${input:run}", "problemMatcher": [] },
+    { "label": "Colab: 런타임 끄기 (down)", "type": "shell", "command": "scripts/colab-duck down", "problemMatcher": [] },
+    { "label": "Mac: 3D 뷰어 (Drive 체크포인트)", "type": "shell", "command": "scripts/duck-local view ${input:run}", "isBackground": true, "problemMatcher": [] },
+    { "label": "Mac: TensorBoard (Drive 로그)", "type": "shell", "command": "scripts/duck-local tb", "isBackground": true, "problemMatcher": [] }
+  ],
+  "inputs": [
+    { "id": "gpu", "type": "pickString", "description": "GPU", "options": ["T4", "L4", "A100", "H100"], "default": "T4" },
+    { "id": "run", "type": "promptString", "description": "run 이름 (맛보기 quick, 본 학습 main)", "default": "main" },
+    { "id": "envs", "type": "pickString", "description": "오리 수 (T4는 2048 권장, 메모리 부족이면 1024)", "options": ["4096", "2048", "1024"], "default": "2048" },
+    { "id": "iters", "type": "promptString", "description": "반복 횟수", "default": "2000" }
+  ]
+}

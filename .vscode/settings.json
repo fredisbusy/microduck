@@ -1,0 +1,28 @@
+{
+  // 클론해 둔 저장소의 무거운 폴더는 감시·검색에서 제외 (VS Code와 Claude 검색 속도)
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/node_modules/**": true,
+    "**/target/**": true,
+    "**/.next/**": true,
+    "**/logs/**": true,
+    "**/runs/**": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/node_modules": true,
+    "**/target": true,
+    "**/.next": true,
+    "runs": true
+  },
+  // Claude Code의 NotebookEdit은 디스크의 파일을 고치므로, 노트북이 늘 저장돼 있어야 함
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  // Mac에서 정책 재생·duck-sim 등에 쓰는 venv
+  "python.defaultInterpreterPath": "${workspaceFolder}/microduck_rl/.venv/bin/python",
+  // Remote-SSH(colab-duck)로 접속했을 때 뷰어·TensorBoard 포트 이름표
+  "remote.portsAttributes": {
+    "8080": { "label": "duck viewer (viser)", "onAutoForward": "openBrowserOnce" },
+    "6006": { "label": "TensorBoard", "onAutoForward": "openBrowserOnce" }
+  }
+}

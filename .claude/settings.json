@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(scripts/colab-duck help)",
+      "Bash(scripts/colab-duck logs:*)",
+      "Bash(scripts/colab-duck status)",
+      "Bash(scripts/colab-duck ckpts:*)",
+      "Bash(scripts/colab-duck pull)",
+      "Bash(colab sessions)",
+      "Bash(colab status:*)",
+      "Bash(colab usage)",
+      "Bash(colab skill)",
+      "mcp__ide__getDiagnostics"
+    ],
+    "ask": [
+      "Bash(scripts/colab-duck up:*)",
+      "Bash(scripts/colab-duck train:*)",
+      "Bash(scripts/colab-duck down)",
+      "Bash(colab new:*)",
+      "Bash(colab run:*)",
+      "Bash(colab stop:*)"
+    ]
+  }
+}
