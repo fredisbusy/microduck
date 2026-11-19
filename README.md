@@ -76,8 +76,10 @@ git -C microduck switch main && git -C microduck pull && git -C microduck rebase
 
 ## 3. Colab에서 공식 학습
 
-`notebooks/microduck_rl_colab.ipynb`를 Colab에 업로드 → GPU 런타임 → 위에서부터 실행.
-결과 ONNX는 `MyDrive/microduck/`에 저장. Mac에서 확인:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fredisbusy/microduck/blob/main/notebooks/microduck_rl_colab.ipynb)
+
+강화학습 입문자용 Getting Started 노트북: 개념 설명 → 맛보기 학습(100회)과 "아기 오리" 영상 → 본 학습 → 성장 과정 영상 비교 → TensorBoard 읽는 법 → ONNX 내보내기.
+GPU 런타임으로 위에서부터 실행. 체크포인트·영상·ONNX는 `MyDrive/microduck/`에 저장. Mac에서 확인:
 
 ```sh
 cd microduck_rl && uv run scripts/infer_policy.py --walking <받은.onnx>
