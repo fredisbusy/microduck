@@ -1,0 +1,18 @@
+diff --git a/configd/src/wifi_ssh.rs b/configd/src/wifi_ssh.rs
+index 77b8202..13fefcd 100644
+--- a/configd/src/wifi_ssh.rs
++++ b/configd/src/wifi_ssh.rs
+@@ -54,7 +54,12 @@ pub fn boottime() -> u64 {
+         tv_nsec: 0,
+     };
+     // SAFETY: a valid out-pointer; CLOCK_BOOTTIME exists on every kernel this runs on.
+-    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
++    // macOS has no CLOCK_BOOTTIME; its CLOCK_MONOTONIC already counts time asleep.
++    #[cfg(target_os = "macos")]
++    let clock = libc::CLOCK_MONOTONIC;
++    #[cfg(not(target_os = "macos"))]
++    let clock = libc::CLOCK_BOOTTIME;
++    unsafe { libc::clock_gettime(clock, &mut ts) };
+     ts.tv_sec as u64
+ }
+ 
