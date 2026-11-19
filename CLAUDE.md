@@ -18,10 +18,18 @@
 
 ## 노트북 (`notebooks/microduck_rl_colab.ipynb`)
 
-- 입문자용 튜토리얼이다(README의 Colab·Kaggle 배지). 브라우저 Colab과 Kaggle 양쪽에서 돌아야 한다. 첫 설치 셀이 `PLATFORM`(colab/kaggle)을 판단한다.
+- 입문자용 튜토리얼이다(README의 Colab·Kaggle 배지). 브라우저 Colab과 Kaggle 양쪽에서 돌아야 한다. 첫 설치 셀이 `PLATFORM`(colab/kaggle/hf)을 판단한다.
 - 사용자가 Colab·Kaggle을 직접 띄우고, Claude는 돕는 역할이다(2026-11-19 결정). 사용자가 요청하지 않으면 `colab-duck up`/`train`을 쓰지 않는다.
 - 결과 저장소는 Hugging Face Hub 비공개 저장소 `<아이디>/microduck-runs`(Mac 계정은 `fredisbusy`)다. Drive는 Kaggle에서 못 쓰므로 쓰지 않는다. 토큰은 노트북 비밀값 `HF_TOKEN`이고, 학습 중 60초마다 `logs/rsl_rl`의 체크포인트·params·tfevents·`train_logs/`를 올린다. ONNX는 `exports/`에 올린다. `latest_checkpoint()`는 로컬에 없으면 HF에서 받아 오므로 플랫폼을 바꿔 이어 학습할 수 있다.
 - 노트북은 학습과 ONNX 내보내기만 한다. 3D 뷰어와 TensorBoard는 노트북에 띄우지 않는다(사용자 결정). Mac에서 `scripts/duck-local pull`(HF → `runs/hf`) 후 `view RUN`(:8090), `tb`(:6007)로 본다. 학습 로그를 봐 달라고 하면 pull 한 뒤 `runs/hf/train_logs/RUN.log`를 읽는다.
 - NotebookEdit을 쓰기 전에 사용자가 노트북을 저장했는지 확인한다. 워크스페이스 설정이 자동 저장이지만, 편집 직전의 변경은 반영 안 됐을 수 있다. NotebookEdit은 고친 셀의 출력을 지운다.
+- VS Code에서는 커널 선택으로 Colab(확장)과 HF Jobs(`scripts/hf-kernel`, README 5절)를 바꿔 쓴다. 노트북은 HF Jobs를 `PLATFORM == 'hf'`로 알아보고, `HF_TOKEN`은 잡 비밀값 환경 변수로 받는다. VS Code의 Colab 커널은 `userdata`를 못 읽어서 입력 칸으로 받는다.
 - `mcp__ide__executeCode`는 VS Code 안의 Claude Code에서만 쓸 수 있다. 코드를 노트북 맨 끝에 새 셀로 넣고, 실행할 때마다 사용자 확인이 필요하다.
 - 노트북은 VS Code가 저장한 형식이다(`source`는 줄 목록, 키 정렬, indent 1, 파일 끝 줄바꿈). 스크립트로 고칠 때 `json.dumps(nb, ensure_ascii=False, indent=1, sort_keys=True) + "\n"`으로 쓴다.
+
+## HF Jobs 커널: `scripts/hf-kernel`
+
+- **돈이 드는 명령**: `up`(분 단위 과금, t4-small $0.40/h)과 잡을 켜 둔 채로 두는 것. `up`은 사용자가 요청했을 때만 실행하고, 작업이 끝났다고 하면 `down`을 제안한다. `--timeout`(기본 4h)이 지나면 잡이 저절로 끝난다.
+- 상태는 `~/.config/microduck/hf-kernel/`(`job`, `token`, `ssh-ctl`)에 있다. Jupyter 토큰은 VS Code에 등록한 주소가 계속 통하도록 고정이다. 지우거나 바꾸면 VS Code에서 서버를 다시 등록해야 한다. 토큰을 저장소나 대화에 옮겨 적지 않는다.
+- 터널은 ssh ControlMaster 하나(`ssh-ctl`)다. Mac이 잠들었다 깨서 커널이 끊기면 `tunnel`. 잡 안에서 명령을 돌릴 때는 `sh CMD`.
+- `hf auth login`과 HF SSH 키 등록(https://huggingface.co/settings/keys)은 사람이 한다.

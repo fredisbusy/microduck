@@ -8,7 +8,7 @@ Pollen Robotics Microduck(오픈소스 이족보행 오리 로봇)을 **장비 �
 | `microduck/` | [pollen-robotics/microduck](https://github.com/pollen-robotics/microduck) (main + 로컬 브랜치 `mac-local`) | 로봇 소프트웨어(Rust). `scripts/duck-sim`으로 MuJoCo 위에서 실제 데몬 실행 |
 | `microduck_rl/` | [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl) (develop) | 공식 RL 학습(mjlab, CUDA 필요) → Colab·Kaggle에서 학습. Mac에선 정책 재생·duck-sim 시뮬레이터 |
 | `microduck-lab/` | [jonathanhawkins/microduck-lab](https://github.com/jonathanhawkins/microduck-lab) (비공식) | Mac CPU로 학습 + 브라우저 뷰어. 안에 공식 저장소 2개를 **고정 sha**로 따로 클론해 둠 |
-| `notebooks/microduck_rl_colab.ipynb` | 내 것 | Colab·Kaggle GPU로 공식 학습 → HF Hub(`<아이디>/microduck-runs`)에 체크포인트/ONNX |
+| `notebooks/microduck_rl_colab.ipynb` | 내 것 | Colab·Kaggle GPU(또는 VS Code에서 Colab·HF Jobs 커널)로 공식 학습 → HF Hub(`<아이디>/microduck-runs`)에 체크포인트/ONNX |
 
 ## 처음 받았을 때
 
@@ -147,6 +147,44 @@ scripts/colab-duck down             # 꼭 끄기 (켜 두면 컴퓨팅 단위가
   scripts/duck-local tb             # TensorBoard → http://localhost:6007
   ```
 - Claude용 규칙은 `CLAUDE.md`, CLI 사용법 스킬은 `.claude/skills/colab-operator`.
+
+## 5. VS Code 노트북: 커널을 Colab ↔ Hugging Face Jobs로 바꿔 쓰기
+
+`notebooks/microduck_rl_colab.ipynb`를 VS Code에서 열고, 오른쪽 위 **커널 선택**으로 GPU를 고른다. 노트북 코드는 그대로다.
+결과는 어느 커널이든 HF Hub `<아이디>/microduck-runs`에 1분마다 올라가므로, 중간에 커널을 바꿔도 **3-2 이어서 학습하기**로 이어 간다.
+
+| 커널 | 붙이는 법 | 비용 | 주의 |
+|---|---|---|---|
+| **Colab** | 커널 선택 → Select Another Kernel → **Colab** → New Colab Server(GPU 고르기) 또는 Auto Connect | 무료 T4 / Colab 구독 | VS Code에서는 보안 비밀(`userdata`)과 Drive 마운트가 안 된다 → 1-2를 실행하면 뜨는 입력 칸에 HF 토큰을 붙여 넣는다 |
+| **HF Jobs** | 터미널에서 `scripts/hf-kernel up` → 커널 선택 → Select Another Kernel → **Existing Jupyter Server** → 클립보드에 복사된 `http://127.0.0.1:8888/?token=…` 붙여넣기 → 이름 `HF Jobs GPU` → Python 3 (ipykernel) | 켜 둔 시간만큼 과금: t4-small $0.40/h, l4x1 $0.80/h, a10g-small $1.00/h, a100-large $2.50/h | 다 쓰면 `scripts/hf-kernel down`. 잊어도 `--timeout`(기본 4h)이 지나면 잡이 끝난다 |
+
+HF Jobs 커널은 주소와 토큰이 늘 같아서(`~/.config/microduck/hf-kernel/token`), VS Code에 한 번 등록하면 다음부터는 `up` 후 커널 목록에서 **HF Jobs GPU**만 고르면 된다.
+VS Code 작업으로도 할 수 있다: `Tasks: Run Task` → `HF 커널: GPU 켜기 / 주소 복사 / 터널 다시 연결 / 상태 / 끄기`.
+
+처음 한 번 (HF Jobs):
+
+```sh
+uv tool install huggingface_hub   # hf 명령 (없으면 스크립트가 uvx로 대신 실행)
+hf auth login                     # Write 토큰. 잡에 HF_TOKEN으로 그대로 넘어가서 노트북 1-0이 필요 없다
+```
+
+- SSH 공개키를 https://huggingface.co/settings/keys 에 등록한다. 1Password SSH agent의 키도 된다(특정 키를 쓰려면 `HF_SSH_KEY=~/.ssh/키파일`).
+- Jobs는 유료라 HF 계정에 결제 수단이 있어야 한다. PRO는 매달 $2 크레딧이 먼저 쓰인다.
+
+```sh
+scripts/hf-kernel up              # t4-small, 최대 4시간. 다른 GPU: scripts/hf-kernel up l4x1 2h
+scripts/hf-kernel status          # 잡 상태·GPU 사용률·터널
+scripts/hf-kernel tunnel          # Mac이 잠들었다 깨서 커널이 끊기면
+scripts/hf-kernel sh              # 잡 컨테이너 셸 (nvidia-smi 등)
+scripts/hf-kernel down            # 꼭 끄기
+```
+
+구조: `hf jobs run --ssh`로 `python:3.12` 컨테이너를 GPU에 띄우고, 그 안에서 Jupyter 서버를 `127.0.0.1:8888`에만 연다(토큰은 잡 비밀값 `JUPYTER_TOKEN`).
+Mac은 `ssh -L 8888:127.0.0.1:8888 <잡ID>@ssh.hf.jobs`로 붙고, VS Code는 [Existing Jupyter Server](https://code.visualstudio.com/docs/datascience/jupyter-kernel-management)로 그 주소를 쓴다.
+`hf jobs run --expose`는 HF 토큰을 `Authorization` 헤더로만 받아서 VS Code가 못 붙고, `--expose-public`은 주소만 알면 누구나 들어올 수 있어서 쓰지 않는다([HF Jobs 설정 문서](https://huggingface.co/docs/hub/en/jobs-configuration)).
+잡마다 새 컨테이너라 노트북 1-2 설치(약 10분)는 매번 다시 한다. 노트북은 `JOB_ID`·`ACCELERATOR` 환경 변수로 HF Jobs인 걸 알아본다(`PLATFORM == 'hf'`).
+
+바꾸는 순서: 지금 커널에서 학습이 끝났거나 마지막 동기화(1분)가 지났는지 확인 → 커널 선택에서 다른 쪽 고르기 → 1-2, 1-3 실행 → 3-2로 이어 학습. HF Jobs를 쓰고 났으면 `scripts/hf-kernel down`.
 
 ## 업데이트
 
