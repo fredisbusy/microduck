@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# hf-kernel: Hugging Face Jobs GPU에 Jupyter 서버를 띄워 VS Code 노트북 커널로 쓰기.
+# VS Code에서는 늘 같은 주소(http://127.0.0.1:8888)로 보이므로, 한 번 등록해 두면 커널 선택기에서
+# Colab ↔ HF 를 고르기만 하면 된다. 결과는 노트북이 HF Hub(<아이디>/microduck-runs)에 올린다.
+#
+#   scripts/hf-kernel up [FLAVOR] [TIMEOUT]  GPU 잡 시작 + 터널 (기본 t4-small $0.40/시간, 최대 4h)
+#   scripts/hf-kernel url                    VS Code에 넣을 주소 (클립보드에도 복사)
+#   scripts/hf-kernel tunnel                 끊긴 터널만 다시 연결
+#   scripts/hf-kernel status                 잡 상태·GPU
+#   scripts/hf-kernel logs                   잡 로그 (Jupyter 서버 시작 과정)
+#   scripts/hf-kernel sh [CMD...]            잡 컨테이너 셸
+#   scripts/hf-kernel down                   잡 취소(과금 멈춤) + 터널 닫기. 다 쓰면 꼭!
+#
+# 처음 한 번: hf auth login (Write 토큰), SSH 공개키를 https://huggingface.co/settings/keys 에 등록,
+#             결제 수단 등록(Jobs는 유료). 자세한 건 README "VS Code에서 커널 바꿔 쓰기".
+# 환경 변수: HF_KERNEL_PORT(8888), HF_KERNEL_IMAGE(python:3.12), HF_SSH_KEY(ssh -i 로 쓸 키)
+set -euo pipefail
+
+PORT="${HF_KERNEL_PORT:-8888}"
+IMAGE="${HF_KERNEL_IMAGE:-python:3.12}"
+STATE="${XDG_CONFIG_HOME:-$HOME/.config}/microduck/hf-kernel"
+CTL="$STATE/ssh-ctl"
+mkdir -p "$STATE"; chmod 700 "$STATE"
+
+die() { echo "❌ $*" >&2; exit 1; }
+if command -v hf >/dev/null; then HF=(hf); else HF=(uvx --quiet --from huggingface_hub hf); fi
+hf() { "${HF[@]}" "$@"; }
+
+# VS Code에 등록한 서버 주소가 계속 통하도록 Jupyter 토큰은 한 번 만들어 고정해 둔다.
+token() {
+  [ -s "$STATE/token" ] || { (umask 077; openssl rand -hex 24 > "$STATE/token"); }
+  cat "$STATE/token"
+}
+job_id() { [ -s "$STATE/job" ] && cat "$STATE/job" || true; }
+need_job() { local j; j="$(job_id)"; [ -n "$j" ] || die "켜 둔 잡이 없어요. 먼저: scripts/hf-kernel up"; echo "$j"; }
+url() { echo "http://127.0.0.1:$PORT/?token=$(token)"; }
+job_stage() {  # RUNNING, COMPLETED, CANCELED ... (없으면 빈 문자열)
+  hf jobs inspect --json "$1" 2>/dev/null | python3 -c 'import sys,json
+d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d
+print(((d or {}).get("status") or {}).get("stage",""))' 2>/dev/null || true
+}
+
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+          -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes)
+[ -z "${HF_SSH_KEY:-}" ] || SSH_OPTS+=(-i "$HF_SSH_KEY" -o IdentitiesOnly=yes)
+ssh_target() { echo "$1@ssh.hf.jobs"; }
+
+tunnel_up() { [ -S "$CTL" ] && ssh -S "$CTL" -O check x 2>/dev/null; }
+tunnel_close() { [ -S "$CTL" ] && ssh -S "$CTL" -O exit x 2>/dev/null || true; rm -f "$CTL"; }
+tunnel_open() {
+  local j="$1"
+  tunnel_close
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && die "Mac의 $PORT 포트를 이미 다른 프로그램이 써요 (HF_KERNEL_PORT=8899 처럼 바꾸기)"
+  ssh "${SSH_OPTS[@]}" -f -N -M -S "$CTL" -o ControlPersist=yes \
+    -L "127.0.0.1:$PORT:127.0.0.1:8888" "$(ssh_target "$j")" \
+    || die "SSH 연결 실패. HF에 SSH 공개키를 등록했는지 확인하세요: https://huggingface.co/settings/keys"
+}
+
+# 잡 컨테이너 안에서 도는 스크립트. JUPYTER_TOKEN은 비밀값으로 넘어오고 jupyter_server가 환경 변수에서 읽는다.
+REMOTE='set -e
+export DEBIAN_FRONTEND=noninteractive PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1
+echo "[hf-kernel] 패키지 설치"
+(apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl libegl1 libgl1 libglib2.0-0 >/dev/null) || echo "[hf-kernel] apt 실패, 계속 진행"
+pip install -q jupyter_server ipykernel huggingface_hub
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || echo "[hf-kernel] GPU 없음"
+echo "[hf-kernel] Jupyter 시작"
+exec jupyter server --no-browser --allow-root --ip=127.0.0.1 --port=8888 --ServerApp.root_dir=/root \
+  --MappingKernelManager.cull_idle_timeout=0'
+
+wait_ssh() {  # 잡이 RUNNING이 되어 SSH가 받아 줄 때까지
+  local j="$1" i
+  for i in $(seq 120); do
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 -o BatchMode=yes "$(ssh_target "$j")" true 2>/dev/null && return 0
+    printf '.'; sleep 5
+  done
+  echo; return 1
+}
+wait_jupyter() {
+  local i
+  for i in $(seq 120); do
+    curl -fsS -o /dev/null "http://127.0.0.1:$PORT/api/status?token=$(token)" 2>/dev/null && return 0
+    printf '.'; sleep 5
+  done
+  echo; return 1
+}
+
+show_url() {
+  local u; u="$(url)"
+  printf '%s' "$u" | pbcopy 2>/dev/null || true
+  cat <<EOF
+✅ HF GPU 커널 준비 완료: $u   (클립보드에 복사됨)
+   VS Code 노트북 오른쪽 위 커널 선택 → Select Another Kernel → Existing Jupyter Server
+   → 위 주소 붙여넣기 → 이름 "HF Jobs GPU" → Python 3 (ipykernel)
+   처음 한 번만 등록하면 다음부터는 목록에서 "HF Jobs GPU"를 고르면 돼요(주소·토큰이 같음).
+   다 쓰면: scripts/hf-kernel down  (켜 둔 시간만큼 과금)
+EOF
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  up)
+    flavor="${1:-t4-small}"; timeout="${2:-4h}"
+    j="$(job_id)"
+    if [ -n "$j" ] && [[ "$(job_stage "$j")" =~ ^(RUNNING|STARTING)$ ]]; then
+      echo "이미 켜 둔 잡이 있어요: $j"
+    else
+      hf auth whoami >/dev/null 2>&1 || die "Hugging Face 로그인이 필요해요: hf auth login (또는 uvx --from huggingface_hub hf auth login)"
+      HF_TOKEN="${HF_TOKEN:-$(hf auth token 2>/dev/null | tail -1)}"; export HF_TOKEN
+      JUPYTER_TOKEN="$(token)"; export JUPYTER_TOKEN
+      echo "🚀 HF Jobs 시작: $flavor, 최대 $timeout (이미지 $IMAGE)"
+      j="$(hf jobs run --detach --quiet --ssh --flavor "$flavor" --timeout "$timeout" --name microduck-kernel \
+            --label microduck-kernel --secrets HF_TOKEN --secrets JUPYTER_TOKEN \
+            "$IMAGE" bash -c "$REMOTE" | tail -1)"
+      [ -n "$j" ] || die "잡을 만들지 못했어요"
+      echo "$j" > "$STATE/job"
+      echo "   잡 ID: $j  (로그: scripts/hf-kernel logs)"
+    fi
+    printf '⏳ 컨테이너 기다리는 중'; wait_ssh "$j" || die "잡이 안 떴어요: scripts/hf-kernel logs"; echo
+    tunnel_open "$j"
+    printf '⏳ Jupyter 기다리는 중(처음 1~2분)'; wait_jupyter || { hf jobs logs "$j" | tail -20; die "Jupyter가 안 떴어요"; }; echo
+    show_url
+    ;;
+  url) need_job >/dev/null; show_url ;;
+  tunnel)
+    j="$(need_job)"; tunnel_open "$j"
+    wait_jupyter || die "Jupyter가 응답하지 않아요 (scripts/hf-kernel status)"; echo "✅ 터널 다시 연결: $(url)"
+    ;;
+  status)
+    j="$(need_job)"; echo "잡 $j: $(job_stage "$j")"
+    if tunnel_up; then echo "터널: 연결됨 (127.0.0.1:$PORT)"; else echo "터널: 끊김 (scripts/hf-kernel tunnel)"; fi
+    ssh "${SSH_OPTS[@]}" -o ConnectTimeout=10 "$(ssh_target "$j")" \
+      'nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader' 2>/dev/null || true
+    ;;
+  logs) j="$(need_job)"; hf jobs logs "$j" | tail -n "${LINES_N:-40}" ;;
+  sh)
+    j="$(need_job)"
+    if [ $# -eq 0 ]; then ssh "${SSH_OPTS[@]}" -t "$(ssh_target "$j")"; else ssh "${SSH_OPTS[@]}" "$(ssh_target "$j")" "$*"; fi
+    ;;
+  down)
+    tunnel_close
+    j="$(job_id)"
+    if [ -n "$j" ]; then hf jobs cancel "$j" && echo "🛑 잡 취소(과금 멈춤): $j"; rm -f "$STATE/job"; else echo "켜 둔 잡이 없어요"; fi
+    ;;
+  help|-h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
+  *) die "모르는 명령: $cmd (scripts/hf-kernel help)" ;;
+esac
