@@ -1,0 +1,6 @@
+# upstream clones (managed separately)
+/microduck/
+/microduck_rl/
+/microduck-lab/
+.DS_Store
+.ipynb_checkpoints/
