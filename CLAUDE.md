@@ -21,6 +21,7 @@
 - 입문자용 튜토리얼이다(README의 Colab·Kaggle 배지). 브라우저 Colab과 Kaggle 양쪽에서 돌아야 한다. 첫 설치 셀이 `PLATFORM`(colab/kaggle/hf)을 판단한다.
 - 사용자가 Colab·Kaggle을 직접 띄우고, Claude는 돕는 역할이다(2026-11-19 결정). 사용자가 요청하지 않으면 `colab-duck up`/`train`을 쓰지 않는다.
 - 결과 저장소는 Hugging Face Hub 비공개 저장소 `<아이디>/microduck-runs`(Mac 계정은 `fredisbusy`)다. Drive는 Kaggle에서 못 쓰므로 쓰지 않는다. 토큰은 노트북 비밀값 `HF_TOKEN`이고, 학습 중 60초마다 `logs/rsl_rl`의 체크포인트·params·tfevents·`train_logs/`를 올린다. ONNX는 `exports/`에 올린다. `latest_checkpoint()`는 로컬에 없으면 HF에서 받아 오므로 플랫폼을 바꿔 이어 학습할 수 있다.
+- 1-2의 라이브러리 설치는 uv 캐시를 HF 비공개 버킷 `<아이디>/microduck-uv-cache`와 주고받는다(`scripts/hf_uv_cache.py`, 노트북이 raw.githubusercontent.com의 main에서 받아 씀). 그래서 이 스크립트를 고치면 main에 푸시해야 노트북에 반영된다. uv 버전(`UV_VERSION`)을 바꾸면 캐시 키가 바뀌어 처음부터 다시 받는다.
 - 노트북은 학습과 ONNX 내보내기만 한다. 3D 뷰어와 TensorBoard는 노트북에 띄우지 않는다(사용자 결정). Mac에서 `scripts/duck-local pull`(HF → `runs/hf`) 후 `view RUN`(:8090), `tb`(:6007)로 본다. 학습 로그를 봐 달라고 하면 pull 한 뒤 `runs/hf/train_logs/RUN.log`를 읽는다.
 - NotebookEdit을 쓰기 전에 사용자가 노트북을 저장했는지 확인한다. 워크스페이스 설정이 자동 저장이지만, 편집 직전의 변경은 반영 안 됐을 수 있다. NotebookEdit은 고친 셀의 출력을 지운다.
 - VS Code에서는 커널 선택으로 Colab(확장)과 HF Jobs(`scripts/hf-kernel`, README 5절)를 바꿔 쓴다. 노트북은 HF Jobs를 `PLATFORM == 'hf'`로 알아보고, `HF_TOKEN`은 잡 비밀값 환경 변수로 받는다. VS Code의 Colab 커널은 `userdata`를 못 읽어서 입력 칸으로 받는다.

@@ -88,6 +88,14 @@ git -C microduck switch main && git -C microduck pull && git -C microduck rebase
 - Kaggle: Settings에서 Accelerator **GPU T4 x2**(학습은 1장만 씀), **Internet On**. 전화번호 인증 필요. 한 세션 최대 12시간.
 - Mac에서 처음 한 번 `cd microduck_rl && uv run hf auth login`.
 
+**라이브러리 캐시 (HF 버킷):** 1-2의 `uv sync`는 처음에 PyTorch·MuJoCo·mjlab 등 수 GB를 받느라 약 10분 걸린다.
+그래서 설치가 끝나면 uv 캐시를 tar 하나로 묶어 내 비공개 HF 버킷 `<아이디>/microduck-uv-cache`에 올리고, 다음 세션(Colab·Kaggle·HF Jobs 어디든)은 그걸 받아 풀고 설치한다(`scripts/hf_uv_cache.py`, 노트북이 GitHub에서 받아 씀).
+
+- 캐시 이름 = CPU 종류 + uv 버전 + 공식 `uv.lock` 해시. 공식 코드의 라이브러리 목록이 바뀌면 지난 캐시로 시작해 새로 올리고 예전 것은 지운다. 버킷에는 늘 하나만 남는다.
+- uv 버전은 `0.11.30`으로 고정하고 `UV_LINK_MODE=copy`를 쓴다. 공식 microduck_rl이 HF Jobs 캐시에서 겪은 문제(다른 uv 버전이 쓴 캐시로 설치가 깨짐)를 피하는 설정을 그대로 따랐다.
+- 캐시 받기·올리기가 실패해도 경고만 내고 평소처럼 설치한다. 캐시를 새로 만들고 싶으면 HF 버킷 페이지에서 `uv-cache-*.tar`를 지운다.
+- 비공개 저장 공간은 무료 계정 100GB 안에서 쓴다(캐시는 수 GB).
+
 Mac에서 확인:
 
 ```sh
@@ -182,7 +190,7 @@ scripts/hf-kernel down            # 꼭 끄기
 구조: `hf jobs run --ssh`로 `python:3.12` 컨테이너를 GPU에 띄우고, 그 안에서 Jupyter 서버를 `127.0.0.1:8888`에만 연다(토큰은 잡 비밀값 `JUPYTER_TOKEN`).
 Mac은 `ssh -L 8888:127.0.0.1:8888 <잡ID>@ssh.hf.jobs`로 붙고, VS Code는 [Existing Jupyter Server](https://code.visualstudio.com/docs/datascience/jupyter-kernel-management)로 그 주소를 쓴다.
 `hf jobs run --expose`는 HF 토큰을 `Authorization` 헤더로만 받아서 VS Code가 못 붙고, `--expose-public`은 주소만 알면 누구나 들어올 수 있어서 쓰지 않는다([HF Jobs 설정 문서](https://huggingface.co/docs/hub/en/jobs-configuration)).
-잡마다 새 컨테이너라 노트북 1-2 설치(약 10분)는 매번 다시 한다. 노트북은 `JOB_ID`·`ACCELERATOR` 환경 변수로 HF Jobs인 걸 알아본다(`PLATFORM == 'hf'`).
+잡마다 새 컨테이너라 노트북 1-2 설치는 매번 다시 하지만, 라이브러리는 HF 캐시 버킷에서 받아 온다(3절 "라이브러리 캐시"). 노트북은 `JOB_ID`·`ACCELERATOR` 환경 변수로 HF Jobs인 걸 알아본다(`PLATFORM == 'hf'`).
 
 바꾸는 순서: 지금 커널에서 학습이 끝났거나 마지막 동기화(1분)가 지났는지 확인 → 커널 선택에서 다른 쪽 고르기 → 1-2, 1-3 실행 → 3-2로 이어 학습. HF Jobs를 쓰고 났으면 `scripts/hf-kernel down`.
 
