@@ -10,6 +10,8 @@ Pollen Robotics Microduck(오픈소스 이족보행 오리 로봇)을 **장비 �
 | `microduck-lab/` | [jonathanhawkins/microduck-lab](https://github.com/jonathanhawkins/microduck-lab) (비공식) | Mac CPU로 학습 + 브라우저 뷰어. 안에 공식 저장소 2개를 **고정 sha**로 따로 클론해 둠 |
 | `notebooks/microduck_rl_colab.ipynb` | 내 것 | Colab·Kaggle GPU(또는 VS Code에서 Colab·HF Jobs 커널)로 공식 학습 → HF Hub(`<아이디>/microduck-runs`)에 체크포인트/ONNX |
 
+강화학습이 처음이면 [docs/rl-tutorial](docs/rl-tutorial/README.md)부터: Mac CPU만으로 CartPole을 MuJoCo → rsl_rl → ONNX → mjlab 순서로 만들어 보는 튜토리얼.
+
 ## 처음 받았을 때
 
 위 세 저장소는 이 저장소에 포함되지 않으므로 직접 클론한다 (macOS, Apple Silicon 기준).
