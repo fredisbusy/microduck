@@ -1,0 +1,30 @@
+<mujoco model="cartpole">
+  <!-- 물리 계산 간격: 0.01초 -->
+  <option timestep="0.01"/>
+
+  <worldbody>
+    <light pos="0 0 6"/>
+    <geom name="floor" type="plane" size="4 4 0.1" pos="0 0 -0.05" rgba=".2 .3 .4 1"/>
+    <!-- 레일: 보기용. contype/conaffinity=0 으로 충돌을 끈다 -->
+    <geom name="rail" type="capsule" fromto="-2 0 1  2 0 1" size="0.02" rgba=".3 .3 .3 1"
+          contype="0" conaffinity="0"/>
+
+    <body name="cart" pos="0 0 1">
+      <!-- TODO 1: x축(1 0 0)을 따라 미끄러지는 관절. 이름 slider, 범위 -1.8~1.8 -->
+      <joint name="slider" type="slide" axis="1 0 0" range="-1.8 1.8" limited="true" damping="5e-4"/>
+      <geom name="cart" type="box" size="0.2 0.15 0.1" mass="1" rgba=".7 .1 .1 1"/>
+
+      <body name="pole">
+        <!-- TODO 2: y축(0 1 0)을 축으로 도는 관절. 이름 hinge -->
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="2e-6"/>
+        <!-- 막대: 수레 중심(0 0 0)에서 위로 1m -->
+        <geom name="pole" type="capsule" fromto="0 0 0  0 0 1" size="0.045" mass="0.1" rgba=".1 .5 .8 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- TODO 3: slider 관절을 미는 모터. 입력 -1~1에 gear 10을 곱해 최대 10N -->
+    <motor name="push" joint="slider" gear="10" ctrlrange="-1 1" ctrllimited="true"/>
+  </actuator>
+</mujoco>
